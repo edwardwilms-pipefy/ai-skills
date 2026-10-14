@@ -94,7 +94,8 @@ N=<pr-number>; SKILL_DIR=<skill base dir>
 REPO_ROOT=$(git rev-parse --show-toplevel); REPO_NAME=$(basename "$REPO_ROOT")
 RUN="$HOME/.cache/full-review/$REPO_NAME-pr$N"; mkdir -p "$RUN" && chmod 700 "$RUN"
 HEAD_REF=$(gh pr view "$N" --json headRefName -q .headRefName)
-git -C "$REPO_ROOT" fetch -q origin "pull/$N/head"
+git -C "$REPO_ROOT" fetch -q origin "pull/$N/head"          # FETCH_HEAD = PR head (works for forks too)
+git -C "$REPO_ROOT" fetch -q origin "$HEAD_REF" 2>/dev/null  # origin/$HEAD_REF, needed to push fixes
 # Reuse a worktree that already has the PR branch checked out and is clean; else make a dedicated one.
 EXISTING=$(git -C "$REPO_ROOT" worktree list --porcelain | awk -v b="refs/heads/$HEAD_REF" '/^worktree /{w=$2} $0=="branch "b{print w}')
 echo "existing worktree for $HEAD_REF: ${EXISTING:-none}"
@@ -102,8 +103,8 @@ echo "existing worktree for $HEAD_REF: ${EXISTING:-none}"
 
    - `EXISTING` set and `git -C "$EXISTING" status --porcelain` empty → `WT=$EXISTING`.
    - `EXISTING` set but dirty → with `--review-only`, use a detached worktree (below); otherwise stop and tell the user which worktree is dirty.
-   - None → `git -C "$REPO_ROOT" worktree add "$RUN/wt" "$HEAD_REF" 2>/dev/null || git -C "$REPO_ROOT" worktree add -b "$HEAD_REF" "$RUN/wt" FETCH_HEAD`, then `git -C "$RUN/wt" branch --set-upstream-to="origin/$HEAD_REF"`; `WT=$RUN/wt`.
-   - `--review-only` / `--at`: `git -C "$REPO_ROOT" worktree add --detach "$RUN/wt" "${AT_SHA:-FETCH_HEAD}"`.
+   - None → `git -C "$REPO_ROOT" worktree add "$RUN/wt" "$HEAD_REF" 2>/dev/null || git -C "$REPO_ROOT" worktree add -b "$HEAD_REF" "$RUN/wt" "origin/$HEAD_REF"`, then `git -C "$RUN/wt" branch --set-upstream-to="origin/$HEAD_REF"` and `git -C "$RUN/wt" merge --ff-only "origin/$HEAD_REF"` (a stale local branch must catch up, or the snapshot check refuses); `WT=$RUN/wt`. A fork PR has no `origin/$HEAD_REF`: use `--review-only`.
+   - `--review-only` / `--at`: `git -C "$REPO_ROOT" fetch -q origin "pull/$N/head" && git -C "$REPO_ROOT" worktree add --detach "$RUN/wt" "${AT_SHA:-FETCH_HEAD}"` (re-fetch first: the branch fetch above moved FETCH_HEAD).
 
 2. Gather the evidence (pins `HEAD_SHA`, `BASE_SHA`, `MERGE_BASE_SHA`; refuses if local HEAD ≠ GitHub `headRefOid`):
 

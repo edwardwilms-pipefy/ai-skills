@@ -33,10 +33,10 @@ minutes.
 
 Count each of these. Token estimate: **prose = words × 1.3**, **code-heavy = chars / 4**.
 
-### Commands — `~/.claude/commands/*.md`
+### Commands and hand-written skills — `~/.claude/skills/*/SKILL.md`, `~/.claude/commands/*.md`
 
 ```bash
-wc -lw ~/.claude/commands/*.md | sort -rn
+wc -lw ~/.claude/skills/*/SKILL.md ~/.claude/commands/*.md 2>/dev/null | sort -rn
 ```
 
 Only the `description:` frontmatter line of each command is always resident; the body loads

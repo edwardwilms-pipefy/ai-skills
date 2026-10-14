@@ -2,7 +2,7 @@
 name: audit-commands
 allowed-tools: Bash(ls:*), Bash(wc:*), Bash(head:*), Bash(grep:*), Bash(diff:*), Read, WebSearch
 argument-hint: [command-name] (optional - audit one command instead of all)
-description: Audit the hand-written commands in ~/.claude/commands for overlap, staleness, and scope drift, and return a verdict with named evidence for each
+description: Audit the hand-written skills (ai-skills repo, linked into ~/.claude/skills) and any leftover ~/.claude/commands for overlap, staleness, and scope drift, and return a verdict with named evidence for each
 ---
 
 <!--
@@ -17,14 +17,17 @@ description: Audit the hand-written commands in ~/.claude/commands for overlap, 
 
 # Audit Commands
 
-Review the hand-written commands in `~/.claude/commands/` and return a verdict per command,
+Review the hand-written skills (the `edwardwilms/ai-skills` repo, symlinked into `~/.claude/skills/<name>/SKILL.md`)
+plus any leftover `~/.claude/commands/*.md`, and return a verdict per skill,
 each backed by named evidence. With an argument, audit only that command.
 
 ## Phase 1 — Enumerate
 
 ```bash
-ls -la ~/.claude/commands/*.md
-wc -lw ~/.claude/commands/*.md | sort -rn
+# Hand-written skills are the symlinks into the ai-skills repo; platform-synced skills live in skills/synced/
+find ~/.claude/skills -maxdepth 1 -type l -printf '%f -> %l\n'
+wc -lw ~/.claude/skills/*/SKILL.md | sort -rn
+ls ~/.claude/commands/*.md 2>/dev/null   # leftovers here duplicate a skill of the same name
 ```
 
 Note anything that is not a live command: `.bak`, `.bak-preECC`, or two files whose
