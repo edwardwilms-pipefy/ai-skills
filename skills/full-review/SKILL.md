@@ -72,7 +72,7 @@ The "stay inside the diff" rule is for code smells. It does **not** apply to req
 
 ## Waivers Are the Owner's, Not the Author's
 
-An explicit criterion is waived only by the issue author, a maintainer, or the repo owner, **in the issue or an issue comment**. A deviation that the PR body, the plan, the CHANGELOG, or a follow-up issue documents is disclosure, not a waiver: the criterion stays Partial/Missing and blocks (#447 zero-limit, #434/#449 "capture deferred to #420", #439 `.pair/` files outside a manifest-only scope). When the honest fix is "the owner amends the criterion", say exactly that and stop: do not code around it, and do not ask the reviewer to accept the PR body's rationale.
+An explicit criterion is waived by the issue author, a maintainer, or the repo owner **in the issue or an issue comment**, or by a **recorded decision**: a dated note in the PR naming who decided and answering a specific question (#448 "Decisions on the open questions (2026-10-07): answered by @edwardwilms"). A recorded decision downgrades the finding to MEDIUM, labelled author-claimed, for a human to confirm. The author's own deviations list, unanswered open questions, the plan, the CHANGELOG, or a follow-up issue are disclosure, not a waiver: the criterion stays Partial/Missing and blocks (#447 zero-limit, #434/#449 "capture deferred to #420", #439 `.pair/` files outside a manifest-only scope). When the honest fix is "the owner amends the criterion", say exactly that and stop: do not code around it, and do not ask the reviewer to accept the PR body's rationale.
 
 ## Anti-Escalation Rule
 

@@ -59,5 +59,13 @@ one Codex round each, read-only:
 | #435 @ 7d51478 | F435-01 stale caller restored by a full `save()` | caught, same lines, same fix |
 | #437 @ d6da009 | AC-001 midpoint fixture lands on the month boundary | caught, with a microsecond counterexample |
 
+Controls, run after the table above:
+
+| PR @ head | lhermoso | New skill |
+|---|---|---|
+| #448 @ c3e2b94 (held out) | F448-LAG-01: candidate filter skips lag-alive revoked packs | **missed** on the first run, and blocked instead on a residual the PR's dated "Decisions on the open questions" had accepted. Two prompt changes followed: recorded decisions now count as (author-claimed) waivers, and a generic pre-filter/post-check predicate-drift check was added. Rerun: caught F448-LAG-01, same lines and numbers. No longer held out |
+| #456 @ 2935ccb (negative control) | approved, zero findings | CHANGES_REQUESTED on one HIGH[AC]: a $0 custom plan that keeps a live Paddle subscription (services.py:718-737) still gets the card-update link, contradicting the PR's claim. Verified real, low impact. Shows the skill is stricter than lhermoso: description drift is HIGH by rule |
+| #447 rerun after the waiver change | AC-416-001 | still caught (no regression) |
+
 The old skill had none of the inputs these needed (issue comments, worker counts, waiver rule, provenance rule).
 Expect the waiver rule to also flag deviations a human reviewer would accept: the fix is an owner comment on the issue.
