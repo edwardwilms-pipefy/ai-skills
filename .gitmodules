@@ -1,0 +1,3 @@
+[submodule "upstream/lhermoso"]
+	path = upstream/lhermoso
+	url = https://github.com/lhermoso/claude-workflows.git

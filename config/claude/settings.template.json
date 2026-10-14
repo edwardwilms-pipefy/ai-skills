@@ -1,0 +1,100 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(gh *)",
+      "Bash(git *)",
+      "Bash(codex *)",
+      "Bash(python3 *)",
+      "Bash(python *)",
+      "Bash(pytest *)",
+      "Bash(black *)",
+      "Bash(mypy *)",
+      "Bash(ruff *)",
+      "Bash(pip *)",
+      "Bash(pip3 *)",
+      "Bash(cat *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(ls *)",
+      "Bash(jq *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(wc *)",
+      "Bash(echo *)",
+      "Bash(pre-commit *)",
+      "Bash(detect-secrets *)",
+      "Bash(node *)",
+      "Bash(npm *)",
+      "Bash(npx *)",
+      "Bash(bash *)",
+      "Bash(source *)",
+      "Bash(chmod *)",
+      "Bash(xargs *)",
+      "Bash(sort *)",
+      "Bash(uniq *)",
+      "Bash(sed *)",
+      "Bash(awk *)",
+      "Bash(tee *)",
+      "Bash(docker *)",
+      "Bash(docker-compose *)",
+      "Bash(docker compose *)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:raw.githubusercontent.com)",
+      "WebSearch"
+    ],
+    "defaultMode": "auto"
+  },
+  "model": "opus[1m]",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "rtk hook claude"
+          }
+        ]
+      }
+    ]
+  },
+  "worktree": {
+    "baseRef": "head"
+  },
+  "enabledPlugins": {
+    "frontend-design@claude-plugins-official": true,
+    "i-have-adhd@i-have-adhd": true
+  },
+  "extraKnownMarketplaces": {
+    "i-have-adhd": {
+      "source": {
+        "source": "github",
+        "repo": "ayghri/i-have-adhd"
+      }
+    }
+  },
+  "effortLevel": "xhigh",
+  "advisorModel": "opus",
+  "skipWorkflowUsageWarning": true,
+  "agentPushNotifEnabled": false,
+  "skipAutoPermissionPrompt": true,
+  "autoMode": {
+    "allow": [
+      "Bash(codex exec *)",
+      "$defaults"
+    ],
+    "soft_deny": [
+      "$defaults",
+      "Bash(make backup-db*) — writes/overwrites backup artifacts, review before running unattended",
+      "Bash(make db-reset*) — destructive DB reset, confirm target before running"
+    ],
+    "environment": [
+      "<describe your org, repos, protected branches and secrets locations here; the original lists MuscleWiki internals and is kept out of this repo>"
+    ]
+  },
+  "modelSettings": {
+    "claude-opus-5-5": {
+      "effortLevel": "high"
+    }
+  }
+}
