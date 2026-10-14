@@ -46,3 +46,18 @@ Derived from lhermoso's actual reviews of MuscleWiki PRs #432-#456 (2026-10), i.
 13. **Deterministic scripts** instead of shell snippets (`scripts/`): shell state does not persist between agent Bash calls, and untrusted PR/issue text never reaches shell source. Issue comments, closing refs via GraphQL (gh 2.45 lacks the JSON field), stable finding IDs, evidence labelled verified vs author-claimed.
 14. **Replay mode** (`--at` + `--as-of`) to evaluate the skill against historical reviews, with the PR body and comments as they were at the time.
 15. Explicit-path staging (upstream still has `git add -A`).
+
+## Eval: replaying lhermoso's reviews (2026-10-14)
+
+`full-review --review-only --at=<pre-fix sha> --as-of=<his review time>` (PR body and comments as they were),
+one Codex round each, read-only:
+
+| PR @ head | lhermoso's finding | New skill |
+|---|---|---|
+| #449 @ 8a49017 | process-local poll throttle with 4 Gunicorn workers; derived "NOT CAPTURED" GET fixture | both caught (HIGH[AC], BLOCKER[AC]); plus 2 PR-body-documented deviations he accepted (`paid` cleanup, newline 404) |
+| #447 @ df7d19f | AC-416-001 zero-limit card/banner suppressed at `page.tsx:212` | caught, same line, same waiver reasoning |
+| #435 @ 7d51478 | F435-01 stale caller restored by a full `save()` | caught, same lines, same fix |
+| #437 @ d6da009 | AC-001 midpoint fixture lands on the month boundary | caught, with a microsecond counterexample |
+
+The old skill had none of the inputs these needed (issue comments, worker counts, waiver rule, provenance rule).
+Expect the waiver rule to also flag deviations a human reviewer would accept: the fix is an owner comment on the issue.
