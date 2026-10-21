@@ -63,12 +63,13 @@ RETRIES_503 = 5
 
 
 def api_key() -> str:
-    key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY") or ""
-    if not key.strip():
+    import env
+    value, _where = env.key("GEMINI_API_KEY", "GOOGLE_API_KEY")
+    if not value:
         raise SystemExit(
-            "set GEMINI_API_KEY (on Windows it is a User env var: a shell opened "
-            "before it was set will not see it - open a new one)")
-    return key.strip()
+            "set GEMINI_API_KEY. Read from the process environment and, on "
+            "Windows, from HKCU/Environment too - neither had it.")
+    return value
 
 
 def tier_spec(tier: str) -> dict:

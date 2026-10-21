@@ -106,14 +106,18 @@ def check_budget(state: object, questions: dict) -> None:
 
 
 def api_key(explicit: str | None = None) -> str:
-    key = explicit or os.environ.get("JEV_API_KEY", "")
-    if not key.strip():
+    if explicit and explicit.strip():
+        return explicit.strip()
+    import env
+    value, _where = env.key("JEV_API_KEY")
+    if not value:
         raise JevUnavailable(
             "no_api_key",
-            "set JEV_API_KEY (on Windows it is a User env var: a shell opened "
-            "before it was set will not see it - open a new one)",
+            "set JEV_API_KEY. It is read from the process environment and, on "
+            "Windows, from HKCU/Environment - so a shell or a Claude Code "
+            "session started before it was set is still covered. Neither had it.",
         )
-    return key.strip()
+    return value
 
 
 def decide(
