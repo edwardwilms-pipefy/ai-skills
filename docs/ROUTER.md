@@ -176,6 +176,36 @@ Each of these cost one probe and would have cost much more as an assumption.
   the repo are live. Agents are files and are copied - re-run the installer
   after editing one.
 
+## The leak I made building this
+
+Worth recording because it is the same failure the router exists to prevent, and
+I walked straight into it.
+
+The two scrubber rules above were found by replaying real prompt history. I then
+used the real strings as the test fixtures that lock those rules - a client
+deliverable filename and two verbatim lines from a client's insurance document -
+and quoted one of them in this document as the example. Four commits later, that
+material was sitting in a **public** repository, in the file whose entire purpose
+is to stop exactly that.
+
+Nothing had been pushed, so it was removed from every tree in the branch with a
+`git filter-branch` tree filter rather than fixed forward: a blob reachable from
+any commit on a branch is published the moment that branch is. The fixtures are
+now synthetic and exercise the same patterns, and the selftests still pass -
+which is the proof that the real strings were never what made the test work.
+
+Two rules came out of it, and they generalise past this repo:
+
+- **A finding from real data is not a fixture.** Reproduce the SHAPE (spaces, an
+  extension, an `@`-mention, a quoted run over 15 chars), never the content.
+- **Check the check.** My first scan for leaked client strings used
+  `git grep -i <needle> origin/main..HEAD`, which is not valid syntax for
+  `git grep` - it searched nothing and reported zero hits for all six needles. A
+  guard that reports "clean" because it ran on nothing is worse than no guard.
+  The scan that found the leak was `git grep <needle> HEAD -- .`, plus a loop
+  over `git rev-list` to prove it was gone from every commit and not just the
+  tip.
+
 ## The judge, and why it only gets to flag
 
 `judge.py` asks jev whether an output served its task. Measured twice against a
