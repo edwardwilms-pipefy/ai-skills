@@ -8,6 +8,14 @@
 #   ./install.sh --dry-run ...        # print what would change
 #   ./install.sh --uninstall ...      # remove only symlinks that point into this repo
 #
+# Also links config/claude/agents/*.md into ~/.claude/agents (route-task needs
+# three dispatch agents, and there was no target for agent FILES before).
+#
+# On Windows use install.ps1 instead: there is no bash on PATH there, and `ln`
+# under MSYS without symlink privilege silently COPIES - which looks like a
+# successful link and quietly breaks "edit here, every tool sees it". The check
+# below detects that and says so rather than letting it pass.
+#
 # Adding a new agent: add one line to TARGETS below. Every agent that reads the
 # open Agent Skills layout (<dir>/<name>/SKILL.md) works the same way.
 set -euo pipefail
@@ -34,6 +42,25 @@ done
 
 run() { if [ "$dry" = 1 ]; then echo "+ $*"; else "$@"; fi; }
 
+# `ln -s` is not guaranteed to produce a symlink: MSYS/Git-for-Windows falls
+# back to copying when it lacks the privilege, with exit status 0. A copy that
+# claims to be a link is the failure that is invisible, so prove it once.
+check_symlinks_work() {
+  local probe
+  probe="$(mktemp -d)" || return 0
+  : > "$probe/target"
+  if ln -s "$probe/target" "$probe/link" 2>/dev/null && [ -L "$probe/link" ]; then
+    rm -rf "$probe"
+    return 0
+  fi
+  rm -rf "$probe"
+  echo "WARN this system does not create real symlinks with 'ln -s'." >&2
+  echo "     Anything 'linked' below is a COPY: edits in the repo will NOT be" >&2
+  echo "     seen by the agents until you re-run install. On Windows prefer" >&2
+  echo "     install.ps1, which makes junctions and tells you which it used." >&2
+  return 1
+}
+
 link_one() {  # <source dir> <target root>
   local src="$1" root="$2" name dest
   name="$(basename "$src")"; dest="$root/$name"
@@ -47,11 +74,30 @@ link_one() {  # <source dir> <target root>
   run ln -sfn "$src" "$dest"; echo "linked $dest -> $src"
 }
 
+[ "$uninstall" = 0 ] && check_symlinks_work || true
+
 for tool in "${selected[@]}"; do
   root="${TARGETS[$tool]}"
   run mkdir -p "$root"
   for src in "$REPO"/skills/*/; do link_one "${src%/}" "$root"; done
 done
+
+# Agents are FILES, so they get linked individually rather than by directory.
+if [[ " ${selected[*]} " == *" claude "* ]] && [ -d "$REPO/config/claude/agents" ]; then
+  agents_root="$HOME/.claude/agents"
+  run mkdir -p "$agents_root"
+  for src in "$REPO"/config/claude/agents/*.md; do
+    [ -e "$src" ] || continue
+    dest="$agents_root/$(basename "$src")"
+    if [ "$uninstall" = 1 ]; then
+      if [ -L "$dest" ] && [[ "$(readlink "$dest")" == "$REPO"/* ]]; then
+        run rm "$dest"; echo "removed $dest"
+      fi
+      continue
+    fi
+    run ln -sfn "$src" "$dest"; echo "linked $dest -> $src"
+  done
+fi
 
 if [ "$upstream_codex" = 1 ]; then
   [ -f "$REPO/upstream/lhermoso/skills/gh-workflow-suite/SKILL.md" ] || git -C "$REPO" submodule update --init
