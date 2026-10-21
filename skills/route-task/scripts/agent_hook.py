@@ -66,6 +66,37 @@ def main() -> int:
         tool_input = {}
     agent = tool_input.get("subagent_type") or tool_input.get("subagentType") or ""
 
+    # THE ALLOWLIST APPLIES HERE TOO. routes.v1.json and docs/ROUTER.md both say
+    # that outside allowlist.projects nothing is "classified, charged or logged"
+    # - which was true of two verbs out of three. MEASURED in a project OUTSIDE
+    # the list: route_hook wrote 0 lines and this hook wrote 1, naming
+    # projeto_integracoes, the project deliberately excluded because the
+    # scrubber was never calibrated against it.
+    #
+    # The question is asked through route.allowed - the same function route_hook
+    # calls - rather than re-implemented here: two implementations of one
+    # question drift, and the one that drifts is the one nobody re-reads.
+    #
+    # WHICH SIDE IS SAFE WHEN THE CONFIG CANNOT BE READ: not writing. A hook's
+    # fail-open promise is about never BLOCKING the tool call, and that is kept
+    # either way - this returns 0 and emits no decision. What is at stake is one
+    # ledger line, i.e. some calibration signal, against writing down a project
+    # name the written contract says is not logged. A lost line is recoverable;
+    # a line that should not exist is not. route_hook already behaves this way,
+    # because load_json raises and its BaseException guard exits 0 in silence.
+    import route as route_mod
+
+    cwd = Path(payload.get("cwd") or payload.get("projectDir") or os.getcwd())
+    try:
+        # load_json raises SystemExit (a BaseException) on an unreadable file,
+        # which is why the tuple below names it explicitly.
+        config = route_mod.load_json(route_mod.ROUTES_FILE)
+        in_scope = route_mod.allowed(config, route_mod.project_name(cwd))
+    except (SystemExit, Exception):
+        in_scope = False
+    if not in_scope:
+        return 0
+
     import ledger
     ledger.append({
         "type": "dispatch",

@@ -128,6 +128,38 @@ def main() -> int:
     check("garbage into the agent hook", run("agent_hook.py", "}{", base_env),
           expect_silent=True)
 
+    # The assertion whose ABSENCE let the allowlist leak through this hook: the
+    # "project OUTSIDE the allowlist" case above only ever ran against
+    # route_hook. Silence cannot be the test here - this hook is silent even
+    # when it writes - so the ledger is counted before and after.
+    def ledger_lines():
+        if not tmp.exists():
+            return 0
+        return len([ln for ln in tmp.read_text(encoding="utf-8").splitlines()
+                    if ln.strip()])
+
+    before = ledger_lines()
+    proc = run("agent_hook.py", {
+        "tool_name": "Agent", "cwd": str(Path.home()), "session_id": "s-out",
+        "tool_input": {"subagent_type": "route-deep"}}, base_env)
+    check("agent dispatch OUTSIDE the allowlist", proc, expect_silent=True)
+    wrote = ledger_lines() - before
+    print(("ok   " if wrote == 0 else "FAIL ")
+          + f"...and it writes NO ledger line (wrote {wrote})")
+    if wrote:
+        failures.append("agent_hook logs outside the allowlist")
+    # The control: inside the allowlist it must still write, or the gate above
+    # would be green because the hook is broken rather than because it is right.
+    before = ledger_lines()
+    run("agent_hook.py", {"tool_name": "Agent", "cwd": IN_ALLOWLIST,
+                          "session_id": "s-in",
+                          "tool_input": {"subagent_type": "route-scout"}}, base_env)
+    wrote = ledger_lines() - before
+    print(("ok   " if wrote == 1 else "FAIL ")
+          + f"inside the allowlist it still writes exactly one line (wrote {wrote})")
+    if wrote != 1:
+        failures.append("agent_hook stopped logging inside the allowlist")
+
     if network:
         print("\n--- live jev ---")
         proc = run("route_hook.py", {"prompt": long_prompt + " z", "cwd": IN_ALLOWLIST},

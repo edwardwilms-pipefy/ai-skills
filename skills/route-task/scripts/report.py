@@ -127,12 +127,43 @@ def render(data: dict, days: float) -> list[str]:
         L.append("")
         L.append("WHAT THE CLASSIFIER SAW")
         for klass, rows in sorted(by_class.items(), key=lambda kv: -len(kv[1])):
-            confs = [r.get("kind_confidence", 0) for r in rows]
+            # `.get(k, 0)` defends against a MISSING key, not against a null
+            # VALUE - and a `"kind_confidence": null` is exactly what a record
+            # written during a fallback can carry. MEASURED: one such line
+            # killed the whole 30-day report with "unsupported format string
+            # passed to NoneType.__format__", naming no line and printing no
+            # section. ledger.read() already survives a half-written line and a
+            # JSON list; the hole was one level up, in the semantics.
+            confs = [c for c in (r.get("kind_confidence") for r in rows)
+                     if isinstance(c, (int, float)) and not isinstance(c, bool)]
+            shown = f"conf~{statistics.median(confs):.2f}" if confs else "conf~  n/a"
             L.append(f"  {klass:<22} {len(rows):4d} {pct(len(rows), len(dec))} "
-                     f"conf~{statistics.median(confs):.2f}")
+                     f"{shown}")
         L.append(f"  abstained (too unsure to advise): {abstained} "
                  f"{pct(abstained, len(dec))}")
     return L + render_outcomes(data) + render_spend(data, subs) + render_proposals(data)
+
+
+def _number(value: object) -> float | None:
+    """The value if it is a real number, else None. A bool is not a score."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _flagged(r: dict) -> bool:
+    """Does the judge's verdict deserve a human reading it?
+
+    `(r.get("served") or 1.0) < 0.3` was the test, and `0.0 or 1.0` is `1.0`:
+    the WORST possible verdict - the output served nothing at all - was read as
+    "served perfectly" and dropped from the only list this report produces. The
+    same `or` hid `needed_more_capability` of 0.0, which is harmless, and would
+    have hidden any future score where 0 is the bad end.
+    """
+    served = _number(r.get("served"))
+    needed = _number(r.get("needed_more_capability"))
+    return ((served is not None and served < 0.3)
+            or (needed is not None and needed > 0.7))
 
 
 def render_outcomes(data: dict) -> list[str]:
@@ -149,8 +180,7 @@ def render_outcomes(data: dict) -> list[str]:
     if mech:
         failed = [r for r in mech if r["mechanical"] == "fail"]
         L.append(f"    failed: {len(failed)} {pct(len(failed), len(mech))}")
-    suspects = [r for r in jud if (r.get("served") or 1.0) < 0.3
-                or (r.get("needed_more_capability") or 0.0) > 0.7]
+    suspects = [r for r in jud if _flagged(r)]
     L.append(f"  flagged by the judge: {len(suspects)} {pct(len(suspects), len(jud))}")
     L.append("    measured 2026-10-21: this judge detects bad work cleanly (served 0.06,")
     L.append("    out-of-depth 0.87 on a hedging answer) and under-credits good work, so")
@@ -214,11 +244,93 @@ def render_proposals(data: dict) -> list[str]:
     return L + [f"  * {p}" for p in proposals]
 
 
+# --- selftest --------------------------------------------------------------
+# $ROUTE_LEDGER is redirected to a temp file: this report READS the ledger, and
+# a test that read the real one would pass or fail depending on the day.
+# The two cases that matter here both arrived as live defects: a null score in a
+# record killed the whole 30-day report, and the worst verdict there is
+# (served = 0.0) was silently dropped from the only list the report produces.
+
+
+def _selftest() -> int:
+    import os
+    import tempfile
+
+    failures = []
+
+    def check(label: str, ok: bool, got: object = "") -> None:
+        print(f"{'ok  ' if ok else 'FAIL'} {label}" + (f"  <- {got!r}" if not ok else ""))
+        if not ok:
+            failures.append(label)
+
+    tmp = Path(tempfile.mkdtemp(prefix="report-selftest-")) / "ledger.jsonl"
+    before = os.environ.get("ROUTE_LEDGER")
+    os.environ["ROUTE_LEDGER"] = str(tmp)
+    try:
+        check("the ledger under test is the temp one", ledger.ledger_path() == tmp,
+              ledger.ledger_path())
+        empty = render(gather(30), 30)
+        check("an empty window is reported as 'nothing recorded', not as health",
+              any("ledger is empty" in line for line in empty), empty)
+
+        ledger.append({"type": "decision", "class": "bug-hunt",
+                       "kind_confidence": 0.91, "abstained": False})
+        # THE record that killed the report: a null confidence. `.get(k, 0)`
+        # defends against a missing key, never against a null value.
+        ledger.append({"type": "decision", "class": "bug-hunt",
+                       "kind_confidence": None, "abstained": False})
+        ledger.append({"type": "decision", "class": "ops-infra",
+                       "kind_confidence": "muito", "abstained": True})
+        ledger.append({"type": "dispatch", "fleet": "gemini", "input_tokens": 120})
+        ledger.append({"type": "dispatch", "fleet": "claude", "via": "agent_hook"})
+        ledger.append({"type": "judgement", "fleet": "codex", "served": 0.0,
+                       "needed_more_capability": None, "quality": "ruim"})
+        ledger.append({"type": "judgement", "fleet": "codex", "served": 0.95,
+                       "needed_more_capability": 0.1, "quality": "bom"})
+        with tmp.open("a", encoding="utf-8") as fh:
+            fh.write('{"type": "decision", "class": "killed mid-ap')
+
+        data = gather(30)
+        check("the half-written line was skipped, not fatal",
+              len(data["decision"]) == 3, len(data["decision"]))
+        lines = render(data, 30)
+        text = "\n".join(lines)
+        check("a null kind_confidence does not kill the report", bool(text))
+        check("a class with no usable confidence prints n/a, not 0.00",
+              "n/a" in text, text)
+        check("the one real confidence is still reported", "conf~0.91" in text, text)
+
+        check("served = 0.0 is flagged", _flagged({"served": 0.0}))
+        check("served = 0.95 is not flagged", not _flagged({"served": 0.95}))
+        check("a null score is not a flag", not _flagged({"served": None}))
+        check("a string score is not a flag", not _flagged({"served": "zero"}))
+        check("out-of-depth 0.87 is flagged",
+              _flagged({"needed_more_capability": 0.87}))
+        check("the 0.0 judgement reaches the flagged list",
+              any("served=0.0" in line for line in lines), lines)
+        check("flagged counts 1 of 2 judgements",
+              any("flagged by the judge: 1" in line for line in lines), lines)
+        check("the gemini tokens are summed",
+              any("120 input tokens" in line for line in lines), lines)
+    finally:
+        if before is None:
+            os.environ.pop("ROUTE_LEDGER", None)
+        else:
+            os.environ["ROUTE_LEDGER"] = before
+
+    print(f"\n{len(failures)} failure(s)" if failures else "\nall checks passed")
+    return 1 if failures else 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--days", type=float, default=30.0)
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--selftest", action="store_true")
     a = ap.parse_args()
+
+    if a.selftest:
+        return _selftest()
     data = gather(a.days)
     if a.json:
         payload = {k: len(v) for k, v in data.items()}

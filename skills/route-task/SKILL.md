@@ -103,15 +103,26 @@ count behind it is a guess, and `routes.v1.json` labels which is which.
 
 ## Before you touch it
 
-Every script has `--selftest` and they are the tests - this repo has no pytest:
+These are the tests - this repo has no pytest. **7 of the 16 scripts carry
+`--selftest`**, which is what the claim "every script has one" used to say and
+was never true (it was 4 of 16 when it was written):
 
 ```bash
 python scripts/jev.py --selftest          # add --no-network for offline
 python scripts/state.py --selftest        # the privacy gate, as assertions
 python scripts/route.py --selftest        # 16 policy cases, offline
 python scripts/cli.py --selftest          # the CLIs resolve to something runnable
+python scripts/ledger.py --selftest       # append/read, and never the real ledger
+python scripts/report.py --selftest       # a null score must not kill the report
+python scripts/codex_task.py --selftest   # a partial answer must not read as clean
 python scripts/selftest_hooks.py          # the hooks fail OPEN; --network for live
 ```
+
+Still without one, and named rather than implied: `agent_hook.py` and
+`route_hook.py` (covered from outside by `selftest_hooks.py`, which runs them as
+subprocesses - that is where the hook guarantee actually lives), `calibrate.py`
+and `sweep.py` (both spend money by design), and `env.py`, `judge.py`,
+`jury.py` and `gemini_task.py`, which have none and are the next candidates.
 
 `docs/ROUTER.md` holds the policy, what was measured to set it, and exactly what
 leaves this machine.

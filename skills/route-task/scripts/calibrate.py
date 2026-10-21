@@ -256,6 +256,29 @@ def summarise(data):
     res = data["results"]
     n = len(res) or 1
 
+    # No rows at all is a REACHABLE state, not a theoretical one: run() does
+    # `continue` on timeout and on server_error, the two most common failures,
+    # so a few minutes of jev being down produces results == []. main() then
+    # went on to write the file and call this, and `vs[len(vs) // 10]` raised
+    # IndexError - AFTER the money had been spent. The empty summary is honest
+    # about having measured nothing; it does not pretend to aggregates.
+    if not res:
+        return {
+            "questions_version": data["questions_version"],
+            "routes_version": data["routes_version"],
+            "measured_at": data["measured_at"],
+            "n": 0,
+            "cost_usd": data["cost_usd"],
+            "usd_per_decision": None,
+            "latency_ms": data["latency_ms"],
+            "_empty": "no decision came back (every call timed out or errored)."
+                      " Nothing was measured, so there is nothing to aggregate -"
+                      " do NOT read this as a result.",
+            "by_class": {}, "by_tier": {}, "by_fleet": {}, "by_complexity": {},
+            "cheap_or_bulk_share": None, "frontier_share": None,
+            "jury_share": None, "downgrades": 0, "distributions": {},
+        }
+
     def bucket(key):
         out = {}
         for r in res:
@@ -341,6 +364,15 @@ def main():
 
     data = run(rows, limit=limit, max_usd=a.max_usd, timeout=a.timeout)
     report(data, show=a.show)
+    # Nothing came back. Do not touch either file: overwriting a real previous
+    # calibration with an empty one would retire measurements that are still the
+    # only evidence behind the numbers in routes.v1.json, and the next reader
+    # would find an artifact that says "n: 0" where a measurement used to be.
+    if not data["results"]:
+        print("")
+        print("no decision came back (timeouts/errors). NOTHING was written - the"
+              " previous calibration, if any, is still the measurement of record.")
+        return 12
     out = Path(a.out) if a.out else OUT
     out.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
     summary = out.with_suffix(".summary.json")
