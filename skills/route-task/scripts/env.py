@@ -44,12 +44,23 @@ def from_windows_user_env(name: str) -> str:
         return ""
 
 
+# Set this to make key() skip the registry. It exists because the registry
+# fallback made the "no key configured" state UNREACHABLE for a test: jev.py's
+# selftest created it by clearing the process environment, and the fallback then
+# found the real key in HKCU anyway. A fallback that cannot be turned off cannot
+# be tested, and the no-key path is the one that has to produce an actionable
+# message rather than a KeyError.
+OPT_OUT = "ROUTE_NO_HKCU"
+
+
 def key(*names: str) -> tuple[str, str]:
     """(value, where). `where` is "env", "hkcu" or "" - the caller can say which."""
     for name in names:
         value = os.environ.get(name, "")
         if value.strip():
             return value.strip(), "env"
+    if os.environ.get(OPT_OUT, "").strip():
+        return "", ""
     for name in names:
         value = from_windows_user_env(name)
         if value.strip():

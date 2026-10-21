@@ -265,7 +265,11 @@ def _selftest(network: bool) -> int:
     check("redaction strips the bearer value", "abc123DEF456" not in leaked, leaked)
 
     # 2. A missing key is an actionable refusal, not a KeyError.
+    # Clearing the process environment is no longer enough to create that state:
+    # api_key() also reads HKCU/Environment, where the real key lives. So the
+    # registry fallback is opted out of for the duration of this one check.
     saved = os.environ.pop("JEV_API_KEY", None)
+    os.environ["ROUTE_NO_HKCU"] = "1"
     try:
         api_key()
         check("missing key raises", False, "no exception")
@@ -273,6 +277,7 @@ def _selftest(network: bool) -> int:
         check("missing key raises no_api_key", exc.reason == "no_api_key", exc.reason)
         check("missing-key message is actionable", "JEV_API_KEY" in str(exc), str(exc))
     finally:
+        os.environ.pop("ROUTE_NO_HKCU", None)
         if saved is not None:
             os.environ["JEV_API_KEY"] = saved
 
