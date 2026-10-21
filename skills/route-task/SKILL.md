@@ -17,7 +17,8 @@ classifier's answer is data; the policy is ours, versioned, with the origin of
 every threshold written next to it.
 
 `$ARGUMENTS` selects a verb. Run everything with the venv-free system Python;
-these scripts are stdlib-only by design.
+these scripts are stdlib-only by design. `python` below means Python 3: on
+Linux and macOS that is usually `python3`, and `python` may not exist at all.
 
 ## decide
 

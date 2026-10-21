@@ -18,7 +18,8 @@ one is the worst, because it is the only one that does not announce itself.
 
 So the process environment is checked first, and HKCU/Environment second. Read
 only, no writes, no PowerShell subprocess. Non-Windows returns the process
-environment and nothing else.
+environment and nothing else - so on Linux and macOS the key has to be exported
+in the shell Claude Code is started from, and install.sh warns when it is not.
 """
 from __future__ import annotations
 

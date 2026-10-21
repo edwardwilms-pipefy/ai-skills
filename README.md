@@ -12,7 +12,7 @@ config/claude/              global CLAUDE.md, RTK.md, settings.template.json (or
 config/claude/agents/       subagent definitions (model + effort frontmatter), copied to ~/.claude/agents
 docs/ROUTER.md              the routing policy, every measurement behind it, and what leaves the machine
 docs/UPSTREAM-DIFF.md       which skills fork which upstream file, and every local delta
-install.sh                  symlinks skills into each tool's skills directory (POSIX)
+install.sh                  symlinks skills into each tool's skills directory (POSIX), plus the hooks block
 install.ps1                 the Windows path: junctions, plus the hooks block with absolute paths
 ```
 

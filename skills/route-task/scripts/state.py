@@ -113,15 +113,69 @@ _PT_CRED_WORD = r"(?:senhas?|chaves?|credenciais|credencial|segredos?|usu[áa]ri
 _PT_GAP = r"(?:\s+[A-Za-zÀ-ÿ]{1,12}){0,3}?"
 _SECRETY = r"(?=[^\s<]{8,})(?=\S*[A-Za-z])(?=\S*(?:\d|[^\w\s]))\S+"
 
+# --- key SHAPES ------------------------------------------------------------
+# A key needs no cue word. MEASURED 2026-10-21 on a second machine (Linux, a
+# SaaS API repo): 17 prompts of real history carried a full product API key
+# (`mw_` + 40-odd base62 chars) written bare - "use this key mw_..." - and every
+# one survived, because the only rules that could see it wanted "api key:",
+# "token" or "secret" in front. The <blob> rule could not either: an `_` inside
+# the key breaks its character class. Paddle entity ids (`pri_`, `sub_`,
+# `txn_`, `ctm_` + 26 chars) survived the same way.
+#
+# Named, because jev.py re-runs these over the FINAL payload as a send gate
+# (find_leak below): a shape that slips past the scrubber's ordering, or a
+# caller that forgets to scrub, is refused before anything leaves the machine.
+#
+# The last one is generic on purpose: a vendor prefix, then a run that mixes
+# upper case, lower case and digits. snake_case identifiers have no upper case
+# and slugs have no mixing, so prose and code names survive; a random token
+# almost never lacks all three. A false positive costs one placeholder - or,
+# at the send gate, one silent turn. A false negative costs a key.
+KEY_SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("jev-key", re.compile(r"jv_(?:live|test)_[A-Za-z0-9_\-]+")),
+    ("openai-key", re.compile(r"sk-[A-Za-z0-9_\-]{12,}")),
+    ("google-key", re.compile("AIza" + r"[A-Za-z0-9_\-]{20,}")),
+    ("github-token", re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}")),
+    ("google-oauth", re.compile(r"(?:ya29|1//)[A-Za-z0-9_\-\.]{20,}")),
+    ("musclewiki-key", re.compile(r"\bmw_[A-Za-z0-9_\-]{4,}")),
+    ("paddle-key", re.compile(r"\bpdl_(?:live|sdbx)_[A-Za-z0-9_\-]{8,}")),
+    ("stripe-key", re.compile(r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{8,}|\bwhsec_[A-Za-z0-9]{16,}")),
+    ("slack-token", re.compile(r"\bxox[abposr]-[A-Za-z0-9\-]{10,}")),
+    ("aws-key", re.compile(r"\bA(?:KIA|SIA)[0-9A-Z]{16}\b")),
+    ("tailscale-key", re.compile(r"\btskey-[A-Za-z0-9\-]{10,}")),
+    ("prefixed-token", re.compile(
+        r"\b[A-Za-z][A-Za-z0-9]{1,11}[_-]"
+        r"(?=[A-Za-z0-9_\-]{16,})(?=[A-Za-z0-9_\-]*\d)"
+        r"(?=[A-Za-z0-9_\-]*[A-Z])(?=[A-Za-z0-9_\-]*[a-z])[A-Za-z0-9_\-]+")),
+)
+
+# Not secrets, but they name one customer's subscription, price or payment.
+# Same send gate, different placeholder: the classifier is told "an id".
+ID_SHAPES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("paddle-id", re.compile(
+        r"\b(?:pri|sub|txn|ctm|pro|add|biz|ntf|ntfset|evt|dsc|adj|cbk|paymtd|seg)"
+        r"_[0-9a-z]{20,}\b")),
+)
+
+
+def find_leak(text: str) -> str | None:
+    """The NAME of the first key or id shape in `text`, or None.
+
+    Returns the shape's name, never the match: the caller reports it, and a
+    report that quoted the match would be the leak it exists to prevent.
+    """
+    for name, pattern in KEY_SHAPES + ID_SHAPES:
+        if pattern.search(text):
+            return name
+    return None
+
+
 # Ordered: earlier patterns win. URLs before paths, because a URL contains
 # slashes that the path pattern would otherwise eat half of.
 SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
     # credentials first - they must never survive, whatever else matches
-    (re.compile(r"jv_(?:live|test)_[A-Za-z0-9_\-]+"), "<key>"),
-    (re.compile(r"sk-[A-Za-z0-9_\-]{12,}"), "<key>"),
-    (re.compile("AIza" + r"[A-Za-z0-9_\-]{20,}"), "<key>"),
-    (re.compile(r"gh[pousr]_[A-Za-z0-9]{16,}"), "<key>"),
-    (re.compile(r"(?:ya29|1//)[A-Za-z0-9_\-\.]{20,}"), "<key>"),
+    *((pattern, "<key>") for _name, pattern in KEY_SHAPES),
+    *((pattern, "<id>") for _name, pattern in ID_SHAPES),
     (re.compile(r"(?i)\b(?:bearer|authorization|api[_-]?key|token|password|secret)\b"
                 r"\s*[:=]?\s*\S+"), "<credential>"),
     # `token` is deliberately NOT repeated below: it is the same word in both
@@ -499,6 +553,39 @@ def _selftest() -> int:
         got = scrub(prose)
         check(f"pt-BR prose is not a credential: {prose!r}",
               "<credential>" not in got and got == prose, got)
+
+    # Bare keys and ids, no cue word. Every value is BUILT from a repeated
+    # pattern so it is obviously not a real key - the shape is what is under
+    # test, never the content (see docs/ROUTER.md on the fixture leak).
+    fake = "Ab3" * 14                                   # mixed case + digits, 42 chars
+    for text, secret, shape in (
+        (f"use this key mw_{fake} please", "Ab3Ab3", "musclewiki-key"),
+        (f"curl ?api_key=mw_{fake[:20]}", "Ab3Ab3", "musclewiki-key"),
+        ("it was mw_Ab3C...", "Ab3C", "musclewiki-key"),       # a truncated one too
+        (f"sandbox pdl_sdbx_apikey_01{'h' * 24}x9", "hhhhhhhh", "paddle-key"),
+        (f"stripe sk_live_{fake[:24]}", "Ab3Ab3", "stripe-key"),
+        (f"slack xoxb-{'1234-' * 3}abcdEFGH", "1234-1234", "slack-token"),
+        ("aws AKIA" + "ABCD2345" * 2 + " here", "ABCD2345", "aws-key"),
+        (f"tailscale tskey-auth-{fake[:20]}", "Ab3Ab3", "tailscale-key"),
+        (f"some vendor xyz_{fake[:24]} token", "Ab3Ab3", "prefixed-token"),
+        (f"customer ctm_01{'k' * 24} on sub_01{'q' * 24}", "kkkkkkkk", "paddle-id"),
+        (f"price pri_01{'m' * 24}", "mmmmmmmm", "paddle-id"),
+    ):
+        got = scrub(text)
+        check(f"bare {shape} removed from {text[:30]!r}", secret not in got, got)
+        check(f"the send gate names it {shape!r}", find_leak(text) == shape, find_leak(text))
+        check(f"the send gate is quiet after the scrub ({shape})", find_leak(got) is None, got)
+        check(f"the send gate never quotes the match ({shape})",
+              secret not in str(find_leak(text)), find_leak(text))
+    # ...and the code names this kind of prompt is full of are NOT keys. Each of
+    # these is classification signal, and a send gate that fired on them would
+    # silence the router on every turn that mentions code.
+    for prose in ("get_muscle_roles_allowed in dependencies", "claude-opus-5-5 and gpt-6.1-sol",
+                  "test_bodymap_stream_returns_403_for_growth_tier", "JEV_API_KEY is unset",
+                  "ExerciseStandard and TierRestrictionError", "the issue-486 worktree",
+                  "feat/route-task on main", "submit_button_v2 and react-dom-18"):
+        check(f"code name is not a key: {prose!r}",
+              find_leak(prose) is None and "<key>" not in scrub(prose), scrub(prose))
 
     check("cap marks the cut", cap("y" * (MAX_TASK_CHARS + 50)).endswith(CUT_MARKER))
     check("cap respects the limit", len(cap("y" * 5000)) <= MAX_TASK_CHARS + len(CUT_MARKER))

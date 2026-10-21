@@ -87,7 +87,8 @@ def api_key() -> str:
     if not value:
         raise GeminiUnavailable(
             "set GEMINI_API_KEY. Read from the process environment and, on "
-            "Windows, from HKCU/Environment too - neither had it.")
+            "Windows, from HKCU/Environment too - neither had it. On Linux/macOS, "
+            "export it in your shell profile and restart Claude Code from that shell.")
     return value
 
 

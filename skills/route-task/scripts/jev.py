@@ -46,6 +46,7 @@ REASONS = (
     "server_error",    # 5xx
     "bad_response",    # 2xx that is not the documented shape
     "over_budget",     # refused locally, before spending anything
+    "leak_guard",      # refused locally: the payload still carried a key/id shape
     "network",         # DNS, TLS, connection reset
 )
 
@@ -115,7 +116,9 @@ def api_key(explicit: str | None = None) -> str:
             "no_api_key",
             "set JEV_API_KEY. It is read from the process environment and, on "
             "Windows, from HKCU/Environment - so a shell or a Claude Code "
-            "session started before it was set is still covered. Neither had it.",
+            "session started before it was set is still covered. Neither had it. "
+            "On Linux/macOS, export it in your shell profile and restart Claude "
+            "Code from that shell.",
         )
     return value
 
@@ -140,6 +143,18 @@ def decide(
     payload: dict = {"state": state, "questions": questions}
     if model:
         payload["model"] = model
+    body = json.dumps(payload, ensure_ascii=False)
+    # THE SEND GATE. Callers scrub before they get here, and this is not a
+    # second scrubber: it REFUSES. Scrubbing is ordered regex substitution, and
+    # one reordered rule or one caller that forgets to scrub ships a key with no
+    # error anywhere. So the final bytes are checked against the same shapes
+    # once more, and anything key- or id-shaped means nothing is sent. Callers
+    # already treat JevUnavailable as "fall back", so a hook stays fail-open:
+    # the cost of a false positive is one turn without advice.
+    import state as state_mod
+    shape = state_mod.find_leak(body)
+    if shape:
+        raise JevUnavailable("leak_guard", f"payload carried a {shape} shape; nothing was sent")
 
     headers = {
         "Authorization": f"Bearer {api_key(key)}",
@@ -151,7 +166,7 @@ def decide(
 
     req = urllib.request.Request(
         ENDPOINT,
-        data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        data=body.encode("utf-8"),
         headers=headers,
         method="POST",
     )
@@ -288,7 +303,32 @@ def _selftest(network: bool) -> int:
     except JevUnavailable as exc:
         check("oversized state refused locally", exc.reason == "over_budget", exc.reason)
 
-    # 4. An unknown reason is a programmer error, caught at construction.
+    # 4. The send gate refuses a key that reached it unscrubbed - BEFORE the
+    # key lookup. A fake key built from a repeated pattern; the shape is under
+    # test, never content. urlopen is replaced for the duration: found by
+    # mutation-testing this very check, a gate that regresses would otherwise
+    # make this --no-network test POST its fixture to the real endpoint.
+    sent = []
+
+    def no_network(*_args, **_kwargs):
+        sent.append(1)
+        raise urllib.error.URLError("selftest: the network is off")
+
+    real_urlopen = urllib.request.urlopen
+    urllib.request.urlopen = no_network
+    try:
+        decide({"task": "deploy with mw_" + "Ab3" * 14}, {"q": {"type": "noul"}},
+               key="unused")
+        check("send gate refuses an unscrubbed key", False, "no exception")
+    except JevUnavailable as exc:
+        check("send gate refuses an unscrubbed key", exc.reason == "leak_guard", exc.reason)
+        check("the refusal names the shape, not the key",
+              "Ab3Ab3" not in str(exc) and "musclewiki-key" in str(exc), str(exc))
+    finally:
+        urllib.request.urlopen = real_urlopen
+    check("nothing reached the network", not sent, f"{len(sent)} attempt(s)")
+
+    # 5. An unknown reason is a programmer error, caught at construction.
     try:
         JevUnavailable("made_up_reason")
         check("unknown reason rejected", False, "no exception")

@@ -87,6 +87,21 @@ Two more rules were added the same way, by measuring instead of reasoning:
   language, so the keyword alone does not trigger: the value has to look like a
   secret (8+ chars, a letter plus a digit or symbol). `a chave do dicionario`
   survives; `a senha do cliente e <value>` does not.
+- **A key needs no cue word.** Measured on a second machine (Linux, a SaaS API
+  repo): 17 prompts of real history carried a full product API key written
+  bare ("use this key `mw_...`"), and all 17 survived, because every rule that could
+  see a key wanted `api key:`, `token` or `secret` in front of it, and an `_`
+  inside the key broke the `<blob>` rule. Payment-provider ids (`pri_`, `sub_`,
+  `txn_`, `ctm_`) survived the same way. Key and id **shapes** are now matched on
+  their own (`KEY_SHAPES` / `ID_SHAPES` in `state.py`), including one generic
+  rule: a short prefix, then a run that mixes upper case, lower case and digits.
+  snake_case and slugs never mix all three, so code names stay as signal.
+- **A send gate, not just a scrubber.** Scrubbing is ordered substitution: one
+  reordered rule, or one caller that forgets to scrub, ships a key with no error
+  anywhere. So `jev.decide` checks the final bytes against the same shapes, and
+  if any match it sends **nothing** (`leak_guard`) and names the shape, never
+  the match. Callers already treat that as "jev unavailable", so the hook stays
+  fail-open: a false positive costs one turn of advice, not a key.
 
 ---
 
@@ -198,6 +213,17 @@ Each of these cost one probe and would have cost much more as an assumption.
   `~/.claude/skills/route-task` and `~/.codex/skills/route-task`, so edits in
   the repo are live. Agents are files and are copied - re-run the installer
   after editing one.
+- **On Linux, `python` may not exist.** Measured on the second machine: only
+  `python3`. The hook command `python <path>/route_hook.py` then exits 127 in
+  the shell *before* the script runs - and the fail-open guarantee lives in the
+  script, so a missing interpreter is the one failure it cannot catch. Every
+  turn would open with a hook error. `install.sh` now prints the hooks block
+  with the interpreter resolved (`python3` first), as `install.ps1` does.
+- **Outside Windows there is no second place to find a key.** `env.py` falls
+  back to HKCU only on Windows; on Linux and macOS a key that is not exported in
+  the shell Claude Code was started from is simply absent, and the hook advises
+  from the keyword table with no sign jev was never asked. `install.sh` warns
+  when `JEV_API_KEY` or `GEMINI_API_KEY` is missing from its own shell.
 
 ## The leak I made building this
 
