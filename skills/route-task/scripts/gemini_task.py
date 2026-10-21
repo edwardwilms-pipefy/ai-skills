@@ -62,11 +62,30 @@ NEWLINE = chr(10)
 RETRIES_503 = 5
 
 
+class GeminiUnavailable(Exception):
+    """Gemini did not answer. Distinct from "answered, and said X".
+
+    This mirrors jev.JevUnavailable, for the reason written in its docstring: a
+    library must not collapse "unavailable" into a bare exit. Every failure mode
+    here used to `raise SystemExit` - no key, 429, non-503 HTTP, unreachable -
+    and SystemExit derives from BaseException, so `except Exception` does not
+    catch it.
+
+    MEASURED: jury.py wraps each juror in `except Exception` precisely so that
+    one juror falling over cannot take the panel down, and a 429 walked straight
+    through it ("ESCAPED jury.py's handler -> SystemExit: gemini API said HTTP
+    429"), killing the whole panel and discarding the codex answer that was
+    already in hand. A 429 is not an exceptional event on this key either: the
+    pro models answer it by default, which is why this one had to be an
+    Exception. Only main() turns it into an exit status.
+    """
+
+
 def api_key() -> str:
     import env
     value, _where = env.key("GEMINI_API_KEY", "GOOGLE_API_KEY")
     if not value:
-        raise SystemExit(
+        raise GeminiUnavailable(
             "set GEMINI_API_KEY. Read from the process environment and, on "
             "Windows, from HKCU/Environment too - neither had it.")
     return value
@@ -98,13 +117,13 @@ def ask(prompt: str, model: str, *, timeout: float = 120.0) -> dict:
                 time.sleep(1.5 * (2 ** attempt))
                 continue
             if exc.code == 429:
-                raise SystemExit(
+                raise GeminiUnavailable(
                     f"gemini rate-limited ({model}). Measured on this key: the pro "
-                    "models answer 429 and only flash is usable.")
-            raise SystemExit(f"gemini API said {last}")
+                    "models answer 429 and only flash is usable.") from exc
+            raise GeminiUnavailable(f"gemini API said {last}") from exc
         except OSError as exc:
-            raise SystemExit(f"gemini API unreachable: {exc}")
-    raise SystemExit(f"gemini API said {last} after {RETRIES_503} tries")
+            raise GeminiUnavailable(f"gemini API unreachable: {exc}") from exc
+    raise GeminiUnavailable(f"gemini API said {last} after {RETRIES_503} tries")
 
 
 def text_of(payload: dict) -> str:
@@ -232,15 +251,22 @@ def main() -> int:
     model = a.model or tier_spec(tier)["model"]
     started = time.time()
 
-    if ask_text:
-        payload = ask(ask_text, model)
-        status, text, usage = "ok", text_of(payload), usage_of(payload)
-        if not text:
-            status = "empty"
-    else:
-        cd = Path(a.cd) if a.cd else None
-        status, text = bulk(bulk_text, model, cd, stall=a.stall, max_s=a.max)
-        usage = {}
+    # The ONLY place that turns "gemini is unavailable" into an exit status. The
+    # exit code and the message are what SystemExit produced before, so the CLI
+    # contract is unchanged - what changed is that a library caller (jury.py)
+    # can now catch it with `except Exception` like any other juror failure.
+    try:
+        if ask_text:
+            payload = ask(ask_text, model)
+            status, text, usage = "ok", text_of(payload), usage_of(payload)
+            if not text:
+                status = "empty"
+        else:
+            cd = Path(a.cd) if a.cd else None
+            status, text = bulk(bulk_text, model, cd, stall=a.stall, max_s=a.max)
+            usage = {}
+    except GeminiUnavailable as exc:
+        raise SystemExit(str(exc)) from exc
 
     elapsed = time.time() - started
     if not a.no_ledger:

@@ -92,7 +92,18 @@ def juror_codex(prompt: str, cd: Path | None, timeout: float) -> dict:
 def juror_gemini(prompt: str, timeout: float) -> dict:
     import gemini_task
     model = gemini_task.tier_spec("cheap")["model"]
-    payload = gemini_task.ask(prompt, model, timeout=timeout)
+    try:
+        payload = gemini_task.ask(prompt, model, timeout=timeout)
+    except gemini_task.GeminiUnavailable as exc:
+        # Caught HERE, and not only by the net in main(), so the block keeps the
+        # model name and says what happened. Until gemini_task grew this
+        # exception the same condition was a SystemExit: it rode through the
+        # future, out of `except Exception`, and took the panel with it. 429 is
+        # the NORMAL answer from the pro models on this key, so the most likely
+        # juror failure was also the one that discarded the other two answers.
+        return {"juror": "gemini", "model": model, "reads_repo": False,
+                "text": "", "weakest": True, "rc": -1,
+                "error": f"{type(exc).__name__}: {exc}"}
     return {"juror": "gemini", "model": model, "reads_repo": False,
             "text": gemini_task.text_of(payload).strip(),
             "weakest": True,
@@ -167,6 +178,11 @@ def main() -> int:
         for name, fut in jobs.items():
             try:
                 verdicts.append(fut.result())
+            # The net, and it stays `Exception` on purpose: every juror failure
+            # that is a RUNTIME CONDITION is now an Exception (gemini's was a
+            # SystemExit and escaped this), while BaseException is deliberately
+            # not caught - a Ctrl-C must still stop the panel instead of being
+            # rendered as a juror's opinion.
             except Exception as exc:
                 verdicts.append({"juror": name, "model": "?", "reads_repo": None,
                                  "text": "", "error": f"{type(exc).__name__}: {exc}",
@@ -177,6 +193,13 @@ def main() -> int:
         try:
             import ledger
             for v in verdicts:
+                # The token counts travel into the record. They were captured
+                # from the response and dropped here, while report.py sums
+                # `input_tokens` over fleet == "gemini" and counts the call - so
+                # every jury showed up in the report as a Gemini call of ZERO
+                # tokens, in the one path that has no size ceiling (a jury
+                # forwards the whole --context-file to the juror).
+                usage = v.get("usage") or {}
                 ledger.append({
                     "type": "dispatch", "fleet": v["juror"], "model": v["model"],
                     "mode": "jury", "project": Path(cd or Path.cwd()).name,
@@ -184,6 +207,7 @@ def main() -> int:
                     "seconds": round(elapsed, 1), "via": "jury",
                     "cost_unit": "quota" if v["juror"] in ("claude", "codex")
                     else "tokens_metered_usd_unpriced",
+                    **{k: val for k, val in usage.items() if val is not None},
                 })
         except Exception:
             pass
