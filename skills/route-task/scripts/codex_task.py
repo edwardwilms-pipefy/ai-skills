@@ -209,6 +209,140 @@ that is the failure mode that matters here.
 """
 
 
+# --- selftest --------------------------------------------------------------
+# This file had no test, and the defect it was missing is exactly the one the
+# retry loop exists to prevent: a PARTIAL answer leaving as if it were clean.
+# No codex is run - a fake binary stands in, writes a final message on its first
+# invocation and then hangs so the watchdog kills it, then exits non-zero
+# WITHOUT writing on its second. That is the measured behaviour of the real
+# thing (it writes -o only at the end of a turn), and it is what made a stale
+# file read back as a fresh success.
+
+FAKE_CODEX = '''import pathlib, sys, time
+args = sys.argv[1:]
+out = pathlib.Path(args[args.index("-o") + 1])
+calls = pathlib.Path(__file__).with_name("calls.txt")
+n = len(calls.read_text(encoding="utf-8").split()) if calls.exists() else 0
+calls.write_text("x " * (n + 1), encoding="utf-8")
+if n == 0:
+    out.write_text("ACHEI 1 de 9 arquivos antes de travar.\\nVERDICT: LGTM\\n",
+                   encoding="utf-8")
+    # Hang, so the watchdog kills this attempt. BOUNDED: on Windows the launcher
+    # is a .bat, so killing the process kills cmd.exe and can orphan this one.
+    time.sleep(6)
+sys.exit(1)   # second invocation: dies without writing anything
+'''
+
+
+def _fake_bin(work: Path) -> Path:
+    """A stand-in for the codex binary that cli.resolve will accept as CODEX_BIN.
+
+    A launcher is needed because resolve() returns ONE argv element, and neither
+    Windows nor POSIX will exec a .py by path.
+    """
+    (work / "fake_codex.py").write_text(FAKE_CODEX, encoding="utf-8")
+    if os.name == "nt":
+        launcher = work / "fake_codex.bat"
+        launcher.write_text(
+            f'@echo off\r\n"{sys.executable}" "{work / "fake_codex.py"}" %*\r\n',
+            encoding="utf-8")
+    else:
+        launcher = work / "fake_codex.sh"
+        launcher.write_text(
+            f'#!/bin/sh\nexec "{sys.executable}" "{work / "fake_codex.py"}" "$@"\n',
+            encoding="utf-8")
+        launcher.chmod(0o755)
+    return launcher
+
+
+def _selftest() -> int:
+    import contextlib
+    import io
+
+    failures = []
+
+    def check(label: str, ok: bool, got: object = "") -> None:
+        print(f"{'ok  ' if ok else 'FAIL'} {label}" + (f"  <- {got!r}" if not ok else ""))
+        if not ok:
+            failures.append(label)
+
+    work = Path(tempfile.mkdtemp(prefix="codex-selftest-"))
+    launcher = _fake_bin(work)
+
+    # The thing under test is the retry loop, not local validation (which has
+    # its own refusal path), and models_cache.json has no entry for a fake.
+    real_validate, real_poll = validate, POLL_S
+    globals()["validate"] = lambda model, effort: None
+    globals()["POLL_S"] = 0.2
+    env_before = os.environ.get("CODEX_BIN")
+    os.environ["CODEX_BIN"] = str(launcher)
+    argv_before = sys.argv
+    sys.argv = ["codex_task.py", "--prompt", "say something", "--model", "fake-model",
+                "--no-ledger", "--stall", "1", "--max", "25"]
+    buf, err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
+            rc = main()
+    finally:
+        globals()["validate"], globals()["POLL_S"] = real_validate, real_poll
+        sys.argv = argv_before
+        if env_before is None:
+            os.environ.pop("CODEX_BIN", None)
+        else:
+            os.environ["CODEX_BIN"] = env_before
+
+    out = buf.getvalue()
+    calls = len((work / "calls.txt").read_text(encoding="utf-8").split())
+    check("the fake binary was invoked twice (killed, then retried)", calls == 2, calls)
+    # THE assertion. Before the fix this was rc 0 with the first attempt's text
+    # printed as a clean answer, verdict and all.
+    check("a partial first attempt plus an empty retry is NOT rc 0", rc != 0, rc)
+    check("inconclusive is reported as 12", rc == 12, rc)
+    # Whatever text is printed must carry the warning. The failing run printed
+    # the fragment, verdict line included, with nothing around it.
+    check("whatever is printed is labelled partial",
+          "[partial output" in err.getvalue(), err.getvalue()[-200:])
+    check("the fragment is still shown (it is the only information there is)",
+          "antes de travar" in out, out[:200])
+
+    # And the control: a run that answers cleanly must still be rc 0, or the fix
+    # above would have turned every run into a failure.
+    good = work / "fake_ok.py"
+    good.write_text('import pathlib, sys\n'
+                    'a = sys.argv[1:]\n'
+                    'pathlib.Path(a[a.index("-o") + 1]).write_text("tudo certo",'
+                    ' encoding="utf-8")\n', encoding="utf-8")
+    if os.name == "nt":
+        ok_launcher = work / "fake_ok.bat"
+        ok_launcher.write_text(f'@echo off\r\n"{sys.executable}" "{good}" %*\r\n',
+                               encoding="utf-8")
+    else:
+        ok_launcher = work / "fake_ok.sh"
+        ok_launcher.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{good}" "$@"\n',
+                               encoding="utf-8")
+        ok_launcher.chmod(0o755)
+    globals()["validate"] = lambda model, effort: None
+    os.environ["CODEX_BIN"] = str(ok_launcher)
+    sys.argv = ["codex_task.py", "--prompt", "say something", "--model", "fake-model",
+                "--no-ledger"]
+    buf = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(io.StringIO()):
+            rc_ok = main()
+    finally:
+        globals()["validate"] = real_validate
+        sys.argv = argv_before
+        if env_before is None:
+            os.environ.pop("CODEX_BIN", None)
+        else:
+            os.environ["CODEX_BIN"] = env_before
+    check("a clean answer is still rc 0", rc_ok == 0, rc_ok)
+    check("and its text is printed", "tudo certo" in buf.getvalue(), buf.getvalue()[:120])
+
+    print(f"\n{len(failures)} failure(s)" if failures else "\nall checks passed")
+    return 1 if failures else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--prompt")
@@ -227,8 +361,13 @@ def main():
     ap.add_argument("--max", type=float, default=MAX_S)
     ap.add_argument("--list-models", action="store_true")
     ap.add_argument("--no-ledger", action="store_true")
+    ap.add_argument("--selftest", action="store_true",
+                    help="prove the retry loop cannot pass a partial as clean;"
+                         " runs a fake binary, never codex")
     a = ap.parse_args()
 
+    if a.selftest:
+        return _selftest()
     if a.list_models:
         for m in load_models():
             if m.get("visibility") == "hide":
@@ -273,16 +412,38 @@ def main():
     started = time.time()
     status, text = "empty", ""
     for i, label in enumerate(("codex", "codex-retry")):
+        # TRUNCATE THE -o FILE TOO. attempt() opens the JSONL with "w", so that
+        # one is always fresh; this one was not, and MEASURED on the real binary:
+        # `codex -o <file>` neither creates nor truncates it at startup - it
+        # writes only at the end of a turn. So attempt 1 killed AFTER writing,
+        # plus attempt 2 dying WITHOUT writing, made final_message() read
+        # attempt 1's text back while run_state was "exited": the demotion to
+        # "partial" never fired and a truncated answer went out as rc 0 with no
+        # "[partial output]" warning. The ancestor this file inherits from
+        # (skills/full-review/scripts/run_codex.py) dug the text out of the
+        # JSONL, which IS truncated, so it was immune by construction - the
+        # regression arrived with the -o file. See _selftest.
+        last_msg.unlink(missing_ok=True)
         run_state = attempt(prompt, args, jsonl, last_msg, stall=a.stall, max_s=a.max,
                             label=label)
-        status, text = final_message(last_msg, jsonl)
-        if run_state == "killed" and status == "ok":
+        got, fresh = final_message(last_msg, jsonl)
+        if run_state == "killed" and got == "ok":
             # Inherited lesson: a killed run that still left a final message is
             # PARTIAL, never ok. Trusting it is how a truncated review passes.
-            status = "partial"
-        if status == "ok":
+            got = "partial"
+        if got == "ok":
+            status, text = got, fresh
             break
-        print(f"[{label}] {status}; {'retrying once' if i == 0 else 'giving up'}",
+        # Worst status across attempts wins; the best TEXT survives. A fragment
+        # from attempt 1 is worth printing under the INCONCLUSIVE warning, where
+        # the "nothing at all" of attempt 2 would print nothing and explain
+        # nothing - but neither is ever rc 0, which is why the status is kept at
+        # the worse of the two rather than at the last one seen.
+        if fresh and not text:
+            status, text = "partial", fresh
+        elif not text:
+            status = got
+        print(f"[{label}] {got}; {'retrying once' if i == 0 else 'giving up'}",
               file=sys.stderr)
 
     elapsed = time.time() - started
