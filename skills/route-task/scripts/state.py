@@ -20,7 +20,15 @@ So the state is BUILT, never forwarded:
     file count, branch KIND. "integrations-assistant" and "feat/route-task" never
     leave the machine; "python+typescript, large, 3 dirty, feat" does, and it is
     strictly more useful to the policy anyway;
-  * pasted content is NEVER sent. Not a sample, not a hash of it, nothing.
+  * a paste is NOT exempt, and the first version of this file claimed it was.
+    MEASURED: Claude Code INLINES a paste into the prompt before any hook sees
+    it - the TUI expands the "[Pasted text #1 +42 lines]" marker into the
+    submitted string - so what arrives here is the expanded text. A paste is
+    therefore scrubbed and capped exactly like any other prompt text: not
+    exempt, not special-cased. 5.2% of measured prompts exceed the 600-char
+    cap, so the usual fate of a big paste is that most of it is CUT, which is
+    not the same promise as "never sent". The cap and the rules below are the
+    whole defense here.
 
 HONEST LIMIT: this is a SCRUBBER, not a redactor. It removes what has a shape
 (URLs, ids, paths, keys, addresses). It cannot remove a client's name typed as a
@@ -44,6 +52,67 @@ from pathlib import Path
 # Until that is done, this comment is the only honest thing to say about 600.
 MAX_TASK_CHARS = 600
 
+# The mark `cap` leaves at the cut. A module constant so the selftest can assert
+# the real slack instead of guessing a round number next to it.
+CUT_MARKER = " ...[trimmed]"
+
+# --- paths -----------------------------------------------------------------
+# The three path flavours (drive letter, POSIX, UNC) differ only in their root,
+# so the rules are BUILT from one grammar. Three hand-written copies of the same
+# segment grammar drift, and the one that drifts is the one nobody re-reads.
+_SEG = r"[^\s\\/\"'<>|]+"                       # one segment: no space, no sep
+# A segment may carry INTERNAL spaces, because client folder names do.
+# MEASURED 2026-10-21: of the 44 client folders under Documents/Clientes on this
+# machine, 27 (61%) contain a space, and the old rule `[^\s"'<>|]+` stopped at
+# the first one - "...\Clientes\Banco Alfa Seguros\contrato.pdf" came out as
+# "<path> Alfa Seguros\<file.pdf>", publishing the client's name in the part
+# that survived. 27 of 27 leaked. No other rule here touches a bare name.
+# The two bounds are not decoration: two nested unbounded quantifiers over a
+# pasted file is how a scrubber turns into a stall.
+_SPACED_SEG = rf"{_SEG}(?: {_SEG}){{0,6}}"
+# The TAIL is separator-agnostic (a real path may mix `\` and `/`) and never
+# space-tolerant: it is the LAST segment, so no following separator proves where
+# it ends, and a space-tolerant tail eats the rest of the sentence.
+_TAIL = r"[^\s\"'<>|]*"
+
+
+def _path_rule(root: str, sep: str) -> re.Pattern[str]:
+    r"""An absolute path that tolerates spaces INSIDE it and stops at the prose.
+
+    A space is allowed only where the SAME separator proves the path continues,
+    which is why the glue separator is fixed per flavour instead of `[\\/]`.
+    With `[\\/]` as glue, "veja C:\a\b.txt e o arquivo x/y.py" matched
+    "b.txt e o arquivo x" as a spaced segment - because a `/` happened to follow
+    it - and the prose went into <path>. The last segment, where the extension
+    lives, is never space-tolerant for the same reason.
+    """
+    s = re.escape(sep)
+    return re.compile(rf"{root}(?:{_SPACED_SEG}{s}){{0,12}}{_TAIL}(?<![.,;:!?])")
+
+
+_BS = re.escape("\\")
+
+# --- credentials written in pt-BR ------------------------------------------
+# The rubric above this was English-only, and the prompts in this project are
+# pt-BR. MEASURED 2026-10-21, all three verbatim through the scrubber: "a senha
+# do cliente e Trocar@2026", "a credencial e wk-9f8e7d6c5b4a39281706" and a PEM
+# header survived whole. The comment over that block says credentials "must
+# never survive, whatever else matches" - in one language.
+#
+# This is NOT the English rule with more words bolted on, for two reasons:
+#   * that rule eats the NEXT token ("senha do" -> <credential>), which deletes
+#     the keyword and leaves the secret standing three words later;
+#   * `chave` and `usuario` are ordinary pt-BR prose ("a chave do dicionario",
+#     "qual a chave primaria"), so the keyword alone cannot be the trigger.
+# So the VALUE has to look like a secret: 8+ chars, at least one letter AND at
+# least one digit or symbol, and not one of our own <placeholders>. The gap
+# between keyword and value is at most three plain words, which is what the
+# measured phrasings need ("senha do cliente e <value>") and little enough that
+# a secret-shaped token further down the sentence is not dragged in.
+_PT_CRED_WORD = r"(?:senhas?|chaves?|credenciais|credencial|segredos?|usu[áa]rios?)"
+_PT_GAP = r"(?:\s+[A-Za-zÀ-ÿ]{1,12}){0,3}?"
+_SECRETY = r"(?=[^\s<]{8,})(?=\S*[A-Za-z])(?=\S*(?:\d|[^\w\s]))\S+"
+
 # Ordered: earlier patterns win. URLs before paths, because a URL contains
 # slashes that the path pattern would otherwise eat half of.
 SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
@@ -55,12 +124,24 @@ SCRUBBERS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?:ya29|1//)[A-Za-z0-9_\-\.]{20,}"), "<key>"),
     (re.compile(r"(?i)\b(?:bearer|authorization|api[_-]?key|token|password|secret)\b"
                 r"\s*[:=]?\s*\S+"), "<credential>"),
+    # `token` is deliberately NOT repeated below: it is the same word in both
+    # languages and the rule above already owns it.
+    (re.compile(rf"(?i)\b{_PT_CRED_WORD}\b{_PT_GAP}\s*[:=]?\s*{_SECRETY}"), "<credential>"),
+    # A PEM block, with or without its END marker and with or without newlines -
+    # the measured leak was a header glued straight to the base64. Continuation
+    # lines must be 20+ base64 chars precisely so this cannot walk into prose.
+    (re.compile(r"-----BEGIN [A-Z ]{0,24}PRIVATE KEY-----"
+                r"[A-Za-z0-9+/=]*(?:\s+[A-Za-z0-9+/=]{20,})*"
+                r"(?:\s*-----END [A-Z ]{0,24}PRIVATE KEY-----)?"), "<key>"),
     # JWTs: three base64url segments. Caught before the generic blob rule.
     (re.compile(r"\beyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+"), "<jwt>"),
     (re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+"), "<email>"),
     (re.compile(r"\bhttps?://\S+"), "<url>"),
-    (re.compile(r"\b[A-Za-z]:[\\/][^\s\"'<>|]+"), "<path>"),       # C:\Users\...
-    (re.compile(r"(?<![\w.])/(?:home|Users|mnt|opt|var|etc|srv)/[^\s\"'<>|]+"), "<path>"),
+    # UNC first: `\\host\share\...` is unreachable by the two rules under it.
+    (_path_rule(rf"{_BS}{_BS}{_SEG}{_BS}", "\\"), "<path>"),
+    (_path_rule(rf"\b[A-Za-z]:{_BS}", "\\"), "<path>"),            # C:\Users\...
+    (_path_rule(r"\b[A-Za-z]:/", "/"), "<path>"),                  # C:/Users/...
+    (_path_rule(r"(?<![\w.])/(?:home|Users|mnt|opt|var|etc|srv)/", "/"), "<path>"),
     # FILENAMES. Found by the --offline calibration pass, 2026-10-21, before a
     # single token was spent: the scrubber was shipping
     # "Fixture_Doc_V4_01012026 - Copy.html" and "fixture_page.html" - client
@@ -146,7 +227,7 @@ def cap(text: str, limit: int = MAX_TASK_CHARS) -> str:
     """Trim to `limit`, marking the cut so the classifier knows it saw a fragment."""
     if len(text) <= limit:
         return text
-    return text[:limit].rstrip() + " ...[trimmed]"
+    return text[:limit].rstrip() + CUT_MARKER
 
 
 def _git(args: list[str], cwd: Path) -> str:
@@ -260,7 +341,16 @@ NASTY = (
     "uuid acd84a65-95be-4713-92b1-2ac314d41ecf. "
     # The two cases the --offline calibration pass caught on real history.
     'check @"Fixture_Doc_V4_01012026 - Copy.html" and @fixture_page.html, '
-    "and add a line below 'uma linha longa de conteudo citado' in fixture_report.docx"
+    "and add a line below 'uma linha longa de conteudo citado' in fixture_report.docx. "
+    # The space-in-the-folder-name leak, in all three path flavours, plus a
+    # credential phrased in pt-BR. Synthetic, like every fixture here: the rule
+    # is to reproduce the SHAPE (a composite client name, a separator, an
+    # extension), never real client content. See docs/ROUTER.md.
+    r"abre C:\Users\edward.wilms\Documents\Clientes\Banco Alfa Seguros\contrato.pdf, "
+    "o log em /var/log/Banco Alfa/erro.log "
+    "e o anexo em " + "\\\\fileserver\\Contratos Alfa\\anexo.docx. "
+    "a senha do cliente e Trocar@2026 e a credencial e wk-9f8e7d6c5b4a39281706. "
+    "-----BEGIN RSA PRIVATE KEY-----MIIEowIBAAKCAQEAbcdefghijklmnopqrstuvwx"
 )
 
 MUST_NOT_SURVIVE = (
@@ -269,8 +359,64 @@ MUST_NOT_SURVIVE = (
     "deploy", "jv_live_Zq91xKpL77", "AIza" + "SyD-99", "eyJhbGciOiJIUzI1NiJ9",
     "302372204", "724b595f1c2d", "acd84a65-95be",
     # filenames and quoted client content
-    "Fixture_Doc", "Copia", "fixture_page", "fixture_report",
+    "Fixture_Doc", "Copy", "fixture_page", "fixture_report",
     "uma linha longa de conteudo",
+    # the composite client name, in each path flavour. "Alfa Seguros" is the
+    # exact fragment the old rule left behind, so it is a needle of its own.
+    "Banco Alfa Seguros", "Alfa Seguros", "Banco Alfa", "Contratos Alfa",
+    "fileserver", "contrato.pdf", "anexo.docx",
+    # the pt-BR credentials and the PEM body
+    "Trocar@2026", "wk-9f8e7d6c5b4a", "MIIEowIBAAKCAQEA",
+)
+
+# A PASTE, which is not exempt from anything - see the module docstring. The
+# assertions over this fixture are deliberately only the two that are TRUE: the
+# cap holds, and the shapes this scrubber knows how to remove are removed. There
+# is no assertion that pasted content fails to reach the state, because it does.
+# What stood here before was `"pasted" not in json.dumps(state)` over the
+# fixture "do the thing": the word cannot appear in a built state, so it
+# exercised nothing - and it would have FAILED on the marker form
+# ("[Pasted text #1 +42 lines]") while PASSING on the expanded form, which is
+# the one that carries the content.
+PASTED_DIFF = (
+    "aplique este diff que eu colei no prompt:\n"
+    "--- a/app/cobranca/regras.py\n"
+    "+++ b/app/cobranca/regras.py\n"
+    "@@ -17,9 +17,9 @@ def taxa(valor, contrato):\n"
+    r"-    tabela = carregar('C:\Users\ed\Documents\Clientes\Banco Beta Previdencia\taxas.json')"
+    "\n"
+    "+    tabela = carregar(TABELA_DE_TAXAS)\n"
+    "-    avisar('joana.ramos@beta-cliente.com.br', assunto)\n"
+    "+    avisar(responsavel.email, assunto)\n"
+    '-    motivo = "o cliente pediu revisao da taxa de juros do contrato"\n'
+    "+    motivo = motivo_do_card\n"
+    "     if valor > limite:\n"
+    "-        return valor * 1.19\n"
+    "+        return valor * ALIQUOTA\n"
+    "     registrar(contrato, valor, motivo)\n"
+    "     if not tabela:\n"
+    "-        raise RuntimeError('tabela de taxas vazia')\n"
+    "+        raise TabelaVazia(contrato)\n"
+    "     for faixa in tabela:\n"
+    "         if faixa.cobre(valor):\n"
+    "             return faixa.aplicar(valor, arredondar=True)\n"
+    "     return valor * ALIQUOTA_PADRAO\n"
+    # Padding with ordinary code, on purpose: the three leaky shapes sit in the
+    # first ~300 chars, so they are inside the surviving window, while the
+    # fixture as a whole clears the cap with room to spare. Without the margin
+    # the "cap fired" check would flip to red on an unrelated scrubber edit.
+    "@@ -48,6 +48,8 @@ def registrar(contrato, valor, motivo):\n"
+    "-    linha = f'{contrato}:{valor}'\n"
+    "+    linha = formatar(contrato, valor, motivo)\n"
+    "     with aberto(DESTINO, 'a') as fh:\n"
+    "         fh.write(linha + chr(10))\n"
+    "     if contador % 100 == 0:\n"
+    "         liberar(fh)\n"
+)
+
+PASTE_MUST_NOT_SURVIVE = (
+    "Banco Beta Previdencia", "Beta Previdencia", "taxas.json",
+    "joana.ramos", "beta-cliente", "revisao da taxa de juros",
 )
 
 
@@ -284,6 +430,14 @@ def _selftest() -> int:
 
     cleaned = scrub(NASTY)
     print(f"\nscrubbed:\n  {cleaned}\n")
+    # A needle that is not in the fixture is a check that cannot fail. One was:
+    # MUST_NOT_SURVIVE said "Copia" while NASTY says "- Copy", so the assertion
+    # guarding the filename rules passed over a string nobody had ever scrubbed.
+    # This loop makes that class of dead check impossible in the one file whose
+    # whole job is to be the privacy gate - so it runs BEFORE the removals.
+    for needle in MUST_NOT_SURVIVE:
+        check(f"the fixture really contains {needle!r} before the scrub",
+              needle in NASTY, "dead needle: proves nothing")
     for needle in MUST_NOT_SURVIVE:
         check(f"removed {needle!r}", needle not in cleaned)
 
@@ -301,8 +455,53 @@ def _selftest() -> int:
     check("a short quoted identifier survives (it is signal, not content)",
           "'copy'" in apostrophes, apostrophes)
 
-    check("cap marks the cut", cap("y" * (MAX_TASK_CHARS + 50)).endswith("...[trimmed]"))
-    check("cap respects the limit", len(cap("y" * 5000)) <= MAX_TASK_CHARS + 16)
+    # A path with a SPACE inside it: the leak, and the two ways the fix can go
+    # wrong. A greedy space-tolerant pattern eats the rest of the sentence, so
+    # the prose after the path is asserted as explicitly as the removal is.
+    spaced = scrub(r"abre C:\Users\ed\Documents\Clientes\Banco Alfa Seguros\contrato.pdf"
+                   " agora e me diga o que achou")
+    check("a spaced client folder does not survive the path rule",
+          "Alfa" not in spaced, spaced)
+    check("the prose AFTER a spaced path survives",
+          spaced.endswith("agora e me diga o que achou"), spaced)
+    cases = {
+        # text -> (must be gone, must still be there)
+        r"veja C:\Users\ed\Banco Alfa Seguros\nota.pdf": ("Alfa", "veja"),
+        r"veja C:\Users\ed\Banco Alfa Seguros\nota.pdf, depois volte":
+            ("Alfa", "depois volte"),
+        r"compare C:\a\Banco Alfa\x.txt com D:\b\Banco Gama\y.txt e me diga":
+            ("Banco", "e me diga"),
+        r"o arquivo C:\Users\ed\Banco Alfa Seguros\sub\relatorio sem extensao":
+            ("Alfa", "o arquivo"),
+        r"o log em /var/log/Banco Alfa/erro.log cresceu": ("Alfa", "cresceu"),
+        "o anexo em " + "\\\\fileserver\\Contratos Alfa\\anexo.docx" + " chegou":
+            ("Alfa", "chegou"),
+        r"veja C:/Users/ed/Banco Alfa Seguros/nota.pdf por favor": ("Alfa", "por favor"),
+        r"veja C:\a\b.txt e o arquivo x/y.py": ("b.txt", "e o arquivo"),
+    }
+    for text, (gone, kept_) in cases.items():
+        got = scrub(text)
+        check(f"path case: {gone!r} gone from {text[:38]!r}...", gone not in got, got)
+        check(f"path case: {kept_!r} survives", kept_ in got, got)
+
+    # pt-BR credentials, and the prose that must NOT be mistaken for one. The
+    # second group is why the keyword alone cannot be the trigger: `chave` and
+    # `usuario` are ordinary words in this language.
+    for text, secret in (("a senha do cliente e Trocar@2026", "Trocar@2026"),
+                         ("a credencial e wk-9f8e7d6c5b4a39281706", "wk-9f8e"),
+                         ("usuario: admin e senha: p4ssw0rd!2026", "p4ssw0rd"),
+                         ("-----BEGIN RSA PRIVATE KEY-----MIIEowIBAAKCAQEAbcdefgh",
+                          "MIIEow")):
+        got = scrub(text)
+        check(f"pt-BR credential removed from {text[:34]!r}", secret not in got, got)
+    for prose in ("a chave do dicionario", "qual a chave primaria da tabela",
+                  "o usuario reclamou do relatorio", "preciso da chave estrangeira"):
+        got = scrub(prose)
+        check(f"pt-BR prose is not a credential: {prose!r}",
+              "<credential>" not in got and got == prose, got)
+
+    check("cap marks the cut", cap("y" * (MAX_TASK_CHARS + 50)).endswith(CUT_MARKER))
+    check("cap respects the limit", len(cap("y" * 5000)) <= MAX_TASK_CHARS + len(CUT_MARKER))
 
     sig = repo_signals(Path(__file__).resolve().parent)
     print(f"\nrepo signals here: {json.dumps(sig)}")
@@ -314,7 +513,22 @@ def _selftest() -> int:
     st = build("do the thing", recent_tools=["Bash", "Edit", "rm -rf /"])
     check("tool args are rejected, only names pass", st["recent_tools"] == ["Bash", "Edit"],
           st["recent_tools"])
-    check("pasted content has no path into the state", "pasted" not in json.dumps(st).lower())
+    # The paste. Both halves matter: the needles must be IN the fixture (or the
+    # removals prove nothing), and the cap must actually fire (or the removals
+    # pass because the text was truncated before reaching them).
+    task = build(PASTED_DIFF, include_repo=False)["task"]
+    check("a pasted diff is capped like any other prompt text",
+          len(task) <= MAX_TASK_CHARS + len(CUT_MARKER), len(task))
+    check("the paste is long enough that the cap fired", task.endswith(CUT_MARKER),
+          task[-40:])
+    for needle in PASTE_MUST_NOT_SURVIVE:
+        check(f"paste: the fixture really contains {needle!r}", needle in PASTED_DIFF,
+              "dead needle: proves nothing")
+        check(f"paste: removed {needle!r}", needle not in task, task)
+    # ...and the replacements are INSIDE the surviving window, which is what
+    # separates "the rule removed it" from "the cap happened to cut it off".
+    for mark in ("<path>", "<email>", "<quoted>"):
+        check(f"paste: {mark} was substituted before the cut", mark in task, task)
 
     print(f"\n{len(failures)} failure(s)" if failures else "\nall checks passed")
     return 1 if failures else 0

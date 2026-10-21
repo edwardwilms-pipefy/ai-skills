@@ -41,7 +41,14 @@ payload is **built**, never forwarded:
 - Repo signals are **shapes, not names**. `integrations-assistant` and
   `feat/route-task` never leave; `python+node+docker, medium, staging` does, and
   it is strictly more useful to the policy.
-- **Pasted content is never sent.** Not a sample, not a hash.
+- **A paste is not exempt** - and this line used to claim it was ("pasted
+  content is never sent, not a sample, not a hash"). **Measured:** Claude Code
+  *inlines* a paste into the prompt before any hook sees it - the TUI expands
+  the `[Pasted text #1 +42 lines]` marker into the submitted string - so a paste
+  arrives here as prompt text and is scrubbed and capped like any other prompt
+  text. 5.2% of measured prompts exceed the 600-char cap, so the usual fate of a
+  large paste is that most of it is **cut**: a weaker claim than "never sent",
+  and the true one.
 - Outside `allowlist.projects` the hook is **silent** - nothing classified,
   charged or logged. This, not the scrubber, is the real control. It ships empty
   (fail closed); it currently lists `integrations-assistant` and `ai-skills`.
@@ -64,6 +71,22 @@ absolute-path rules, because `@`-mentions are relative paths) and a verbatim
 quoted line out of a client's insurance document. The fixtures in `state.py`
 that lock those two cases are SYNTHETIC - the real strings are not reproduced
 here, in a public repo, which is the whole point of the rule.
+
+Two more rules were added the same way, by measuring instead of reasoning:
+
+- **An absolute path tolerates spaces inside it.** The old rule ended at the
+  first space, so `...\Clientes\Banco Alfa Seguros\contrato.pdf` came out as
+  `<path> Alfa Seguros\<file.pdf>` - the client's name in the surviving half. Of
+  the 44 client folders on this machine 27 (61%) have a space in the name, and
+  27 of 27 leaked. The space is allowed only where the *same* separator proves
+  the path continues; the last segment is never space-tolerant, because nothing
+  marks where it ends and a greedy rule there eats the sentence.
+- **Credentials are matched in pt-BR too** (`senha`, `chave`, `credencial`,
+  `segredo`, `usuario`, plus PEM headers). The rubric was English-only while the
+  prompts here are not. `chave` and `usuario` are ordinary words in this
+  language, so the keyword alone does not trigger: the value has to look like a
+  secret (8+ chars, a letter plus a digit or symbol). `a chave do dicionario`
+  survives; `a senha do cliente e <value>` does not.
 
 ---
 
